@@ -27,6 +27,13 @@ type TransitionRequest struct {
 	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
 	Reason          string `json:"reason" binding:"required,min=3,max=500"`
 	WindowVersion   uint   `json:"windowVersion"`
+	// Berthing fields are only consumed when a 系泊方案 is submitted for
+	// approval (draft/review/superseded -> approved). Other entities and
+	// transitions ignore them.
+	BerthCode  string    `json:"berthCode" binding:"max=64"`
+	StartAt    time.Time `json:"startAt"`
+	EndAt      time.Time `json:"endAt"`
+	WindowCode string    `json:"windowCode" binding:"max=64"`
 }
 
 type AuditSummaryQuery struct {

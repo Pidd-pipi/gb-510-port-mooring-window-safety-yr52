@@ -81,6 +81,8 @@ func migrate(db *gorm.DB) error {
 		&model.MooringPlan{},
 		&model.WeatherWindow{},
 		&model.SafetyClearance{},
+		&model.BerthOccupancy{},
+		&model.BerthSerialLock{},
 	)
 }
 
@@ -171,9 +173,48 @@ func seedMooringPlan(ctx context.Context, db *gorm.DB) error {
 		{BaseModel: model.BaseModel{Code: "MP-003", Name: "系泊方案示例三", Status: "approved", Version: 1,
 			Description: "用于启动验证和主要流程演示的系泊方案记录"}, Facility: "港口系泊安全窗口评估区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-510-03"},
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-510-03",
+			BerthCode: "B-03", WindowCode: "WW-002",
+			BerthStartAt: timePointer(now.Add(6 * time.Hour)), BerthEndAt: timePointer(now.Add(12 * time.Hour))},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	return seedBerthOccupancy(ctx, db, items, now)
+}
+
+// seedBerthOccupancy materializes the active occupancy of the seeded approved
+// plan MP-003 so the 泊位时段占用闭环 is visible on a fresh environment.
+func seedBerthOccupancy(ctx context.Context, db *gorm.DB, plans []model.MooringPlan, now time.Time) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.BerthOccupancy{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	var approved model.MooringPlan
+	for _, plan := range plans {
+		if plan.Code == "MP-003" && plan.Status == "approved" {
+			approved = plan
+		}
+	}
+	if approved.ID == 0 {
+		return nil
+	}
+	start := now.Add(6 * time.Hour)
+	end := now.Add(12 * time.Hour)
+	occupancy := model.BerthOccupancy{
+		Code: "OCC-SEED-MP003", Status: "active", Version: 1,
+		BerthCode: "B-03", StartAt: start, EndAt: end,
+		PlanID: approved.ID, PlanCode: approved.Code, WindowCode: "WW-002",
+		AcquiredBy: "admin", AcquiredAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.WithContext(ctx).Create(&occupancy).Error; err != nil {
+		return err
+	}
+	if err := db.WithContext(ctx).Create(&model.BerthSerialLock{BerthCode: "B-03", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		return err
+	}
+	return db.WithContext(ctx).Model(&model.MooringPlan{}).Where("id = ?", approved.ID).
+		Update("current_occupancy_id", occupancy.ID).Error
 }
 
 func seedWeatherWindow(ctx context.Context, db *gorm.DB) error {

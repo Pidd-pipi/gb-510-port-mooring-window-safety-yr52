@@ -11,11 +11,13 @@ import (
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type SecurityService interface {
 	Login(context.Context, dto.LoginRequest) (dto.LoginResponse, error)
 	Audit(context.Context, string, string, string, string, uint, string, string, string) error
+	AuditInTx(context.Context, *gorm.DB, string, string, string, string, uint, string, string, string) error
 	AuditWithWindowVersion(context.Context, string, string, string, string, uint, string, string, string, uint) error
 	ListAudits(context.Context, int, int, string) ([]model.AuditLog, int64, error)
 	AuditSummary(context.Context, time.Duration) (model.AuditSummary, error)
@@ -58,6 +60,29 @@ func (s *securityService) Login(ctx context.Context, input dto.LoginRequest) (dt
 
 func (s *securityService) Audit(ctx context.Context, actor, requestID, action, entityType string, entityID uint, before, after, detail string) error {
 	return s.audit(ctx, actor, requestID, action, entityType, entityID, before, after, detail, 0)
+}
+
+// AuditInTx writes the audit row inside a caller-managed transaction so
+// occupancy state changes and their audit trail commit atomically.
+func (s *securityService) AuditInTx(ctx context.Context, tx *gorm.DB, actor, requestID, action, entityType string, entityID uint, before, after, detail string) error {
+	log := model.AuditLog{
+		Actor: actor, RequestID: requestID, Action: action, EntityType: entityType,
+		EntityID: entityID, BeforeState: before, AfterState: after, Detail: detail,
+		CreatedAt: time.Now().UTC(),
+	}
+	if actor == "" {
+		log.Actor = "system"
+	}
+	if requestID == "" {
+		log.RequestID = "untracked"
+	}
+	if action == "" || entityType == "" {
+		return fmt.Errorf("audit action and entity type are required")
+	}
+	if err := s.repository.AppendAuditTx(ctx, tx, &log); err != nil {
+		return fmt.Errorf("persist %s audit: %w", action, err)
+	}
+	return nil
 }
 
 func (s *securityService) AuditWithWindowVersion(ctx context.Context, actor, requestID, action, entityType string, entityID uint, before, after, detail string, windowVersion uint) error {

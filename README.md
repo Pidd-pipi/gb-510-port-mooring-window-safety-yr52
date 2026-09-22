@@ -28,9 +28,14 @@ docker compose down -v --remove-orphans
 |---|---|---|---|
 | 船舶靠泊 | `VesselCall` | `/api/vessels` | planned, approach, moored, departed |
 | 系泊方案 | `MooringPlan` | `/api/plans` | draft, review, approved, superseded |
+| 泊位占用 | `BerthOccupancy` | `/api/berth-occupancies` | active, released |
 | 风浪窗口 | `WeatherWindow` | `/api/weather-windows` | forecast, safe, restricted, expired |
 | 安全许可 | `SafetyClearance` | `/api/clearance` | pending, cleared, restricted, expired |
 
+- 系泊方案批准的**泊位时段占用闭环**：提交批准时必须填写泊位、靠泊起止时间和关联风浪窗口；后端以同一泊位时间重叠为冲突，只有关联窗口为 `safe` 且时段空闲才批准。批准失败（窗口不安全、缺失字段、时段重叠、版本过期）时方案保持原状态，且不会留下任何占用记录。
+- 批准在单个数据库事务内完成：按泊位串行加锁 → 锁定校验窗口版本/状态 → 重叠检查 → 写占用 → 推进方案状态 → 写审计；并发批准同一泊位同一时段只有一处成功，其余得到 `409 berth_occupied`。
+- 撤回（approved → review）或替代（approved → superseded）在同一事务内释放占用：占用记录不删除，状态变为 `released` 并固化释放人、释放时间和释放原因，同时写入 `occupancy_release(_supersede)` 审计；释放后时段立即空闲，可被重新批准。
+- 方案页展示当前占用、冲突时段（批准前 `GET /api/berth-occupancies/conflicts` 预览）和释放结论；数据来自后端，刷新后可回读。已批准方案的泊位分配不允许通过普通编辑修改，必须先撤回或替代。
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC；后端写路由中间件、前端路由守卫与按钮权限保持一致。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 安全许可采用真实双人确认：operator 首次提交后仍保持 `pending`，不同账号的 reviewer/admin 才能放行；提交人不能自审。
@@ -115,6 +120,7 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `CallState` | `planned, approach, moored, departed` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `ClearanceState` | `pending, cleared, restricted, expired` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| `OccupancyState` | `active, released` | `backend/internal/constants/status.go`、`frontend/src/types/domain.ts`（`BerthOccupancy.status`） |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

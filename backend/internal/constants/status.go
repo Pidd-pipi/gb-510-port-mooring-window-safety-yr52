@@ -25,6 +25,19 @@ const (
 
 var AllClearanceState = []string{"pending", "cleared", "restricted", "expired"}
 
+// OccupancyState tracks the berth time-slot occupied by an approved 系泊方案.
+// Active rows are the single source of truth for overlap detection; releasing
+// (撤回/替代) turns them into a durable release conclusion instead of deleting
+// the record.
+type OccupancyState string
+
+const (
+	OccupancyStateActive   OccupancyState = "active"
+	OccupancyStateReleased OccupancyState = "released"
+)
+
+var AllOccupancyState = []string{"active", "released"}
+
 var VesselCallTransitions = map[string]map[string]bool{
 	"planned":  {"approach": true, "moored": true},
 	"approach": {"moored": true, "departed": true, "planned": true},

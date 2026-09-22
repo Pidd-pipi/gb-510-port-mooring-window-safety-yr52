@@ -6,12 +6,15 @@ import (
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/dto"
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // WeatherWindowRepository owns all persistence operations for 风浪窗口.
 type WeatherWindowRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.WeatherWindow], error)
 	Get(context.Context, uint) (model.WeatherWindow, error)
+	GetByCode(context.Context, string) (model.WeatherWindow, error)
+	GetByCodeForUpdate(context.Context, *gorm.DB, string) (model.WeatherWindow, error)
 	Create(context.Context, *model.WeatherWindow) error
 	Update(context.Context, uint, uint, *model.WeatherWindow) error
 	Delete(context.Context, uint) error
@@ -31,6 +34,24 @@ func (r *weatherWindowRepository) List(ctx context.Context, q dto.PageQuery) (Pa
 }
 func (r *weatherWindowRepository) Get(ctx context.Context, id uint) (model.WeatherWindow, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *weatherWindowRepository) GetByCode(ctx context.Context, code string) (model.WeatherWindow, error) {
+	var item model.WeatherWindow
+	err := r.store.db.WithContext(ctx).Where("code = ?", code).First(&item).Error
+	return item, err
+}
+
+// GetByCodeForUpdate loads the related 风浪窗口 with a row lock for the duration
+// of an approval transaction, so a window cannot flip safe -> restricted while
+// the occupancy is being acquired.
+func (r *weatherWindowRepository) GetByCodeForUpdate(ctx context.Context, tx *gorm.DB, code string) (model.WeatherWindow, error) {
+	var item model.WeatherWindow
+	query := tx.WithContext(ctx).Where("code = ?", code)
+	if tx.Dialector.Name() != "sqlite" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.First(&item).Error
+	return item, err
 }
 func (r *weatherWindowRepository) Create(ctx context.Context, item *model.WeatherWindow) error {
 	return r.store.Create(ctx, item)

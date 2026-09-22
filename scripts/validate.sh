@@ -66,6 +66,52 @@ reviewed=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/clearance/$cl
 printf '%s' "$reviewed" | jq -e '.data.status == "cleared" and .data.submittedBy == "operator" and .data.confirmedBy == "reviewer" and .data.windowVersion == 11' >/dev/null
 
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100" -H "Authorization: Bearer $token" | jq -e '.meta.total >= 2' >/dev/null
+
+# 泊位时段占用闭环：安全窗口 + 占用获取 + 并发冲突 + 撤回释放
+ww_code="WW-SMOKE-$(date +%s)"
+start_at=$(date -u -d '+2 days' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+2d '+%Y-%m-%dT%H:%M:%SZ')
+mid_at=$(date -u -d '+2 days +2 hours' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+2d -v+2H '+%Y-%m-%dT%H:%M:%SZ')
+end_at=$(date -u -d '+2 days +4 hours' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+2d -v+4H '+%Y-%m-%dT%H:%M:%SZ')
+after_end=$(date -u -d '+2 days +5 hours' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v+2d -v+5H '+%Y-%m-%dT%H:%M:%SZ')
+ww_payload=$(printf '{"code":"%s","name":"Smoke safe window","facility":"Validation Berth","owner":"operator","category":"smoke","riskLevel":"low","metricValue":10,"metricUnit":"kn","effectiveAt":"%s","evidence":"calm forecast"}' "$ww_code" "$start_at")
+ww_created=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/weather-windows" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$ww_payload")
+ww_id=$(printf '%s' "$ww_created" | jq -er '.data.id')
+ww_version=$(printf '%s' "$ww_created" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/weather-windows/$ww_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"status":"safe","expectedVersion":1,"reason":"smoke marks forecast window safe"}' | jq -e '.data.status == "safe"' >/dev/null
+
+plan_code="MP-SMOKE-$(date +%s)"
+plan_payload=$(printf '{"code":"%s","name":"Smoke berth plan","facility":"Validation Berth","owner":"operator","category":"smoke","riskLevel":"medium","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"lines checked"}' "$plan_code" "$start_at")
+plan_created=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$plan_payload")
+plan_id=$(printf '%s' "$plan_created" | jq -er '.data.id')
+berth="SMOKE-B-$(date +%s | tail -c 5)"
+
+# 批准前冲突预览为空
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/berth-occupancies/conflicts?berth=$berth&startAt=$start_at&endAt=$end_at" -H "Authorization: Bearer $operator_token" | jq -e '.data.free == true' >/dev/null
+# 缺少泊位分配的批准被拒
+missing_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans/$plan_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d '{"status":"approved","expectedVersion":1,"reason":"smoke missing allocation"}')
+[ "$missing_status" = "422" ]
+# 安全窗口 + 空闲时段批准成功，占用回读
+approve_payload=$(printf '{"status":"approved","expectedVersion":1,"reason":"smoke approval acquires berth occupancy","berthCode":"%s","startAt":"%s","endAt":"%s","windowCode":"%s"}' "$berth" "$start_at" "$end_at" "$ww_code")
+approved=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans/$plan_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$approve_payload")
+occ_id=$(printf '%s' "$approved" | jq -er '.data.currentOccupancyId')
+printf '%s' "$approved" | jq -e --arg berth "$berth" --arg ww "$ww_code" '.data.status == "approved" and .data.berthCode == $berth and .data.windowCode == $ww' >/dev/null
+# 重叠预览与重叠批准（409）
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/berth-occupancies/conflicts?berth=$berth&startAt=$mid_at&endAt=$after_end" -H "Authorization: Bearer $operator_token" | jq -e '.data.free == false and (.data.conflicts | length == 1)' >/dev/null
+dup_code="MP-SMOKE-DUP-$(date +%s)"
+dup_payload=$(printf '{"code":"%s","name":"Smoke duplicate plan","facility":"Validation Berth","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s"}' "$dup_code" "$start_at")
+dup_id=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$dup_payload" | jq -er '.data.id')
+dup_approve=$(printf '{"status":"approved","expectedVersion":1,"reason":"smoke overlapping approval","berthCode":"%s","startAt":"%s","endAt":"%s","windowCode":"%s"}' "$berth" "$mid_at" "$after_end" "$ww_code")
+dup_status=$(curl -sS -o /tmp/smoke-dup.json -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans/$dup_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$dup_approve")
+[ "$dup_status" = "409" ]
+jq -e '.error == "berth_occupied"' /tmp/smoke-dup.json >/dev/null
+# 并发批准同一时段只能一处成功（已成功的方案再次以新版本竞争，另一新方案必须失败）
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/berth-occupancies?berth=$berth&status=active" -H "Authorization: Bearer $token" | jq -e '.meta.total == 1 and .data[0].id == '$occ_id >/dev/null
+# 撤回释放占用并留下释放结论
+approved_version=$(printf '%s' "$approved" | jq -er '.data.version')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/plans/$plan_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d '{"status":"review","expectedVersion":'$approved_version',"reason":"smoke withdrawal releases berth"}' | jq -e '.data.status == "review" and .data.currentOccupancyId == 0' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/berth-occupancies?planId=$plan_id" -H "Authorization: Bearer $token" | jq -e '.data[0].status == "released" and .data[0].releasedBy == "admin" and (.data[0].releaseReason | length > 0)' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100&search=BerthOccupancy" -H "Authorization: Bearer $token" | jq -e '.data | any(.entityType == "BerthOccupancy" and .action == "occupancy_acquire") and any(.entityType == "BerthOccupancy" and .action == "occupancy_release")' >/dev/null
+
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100" -H "Authorization: Bearer $token" | jq -e --argjson id "$clearance_id" '.data | any(.entityType == "SafetyClearance" and .entityId == $id and .windowVersion == 11 and (.requestId | length > 0))' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $token" | jq -e '.data.total >= 2 and .data.transitions >= 1' >/dev/null
 docker compose ps

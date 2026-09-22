@@ -62,6 +62,7 @@ async function confirmTransition() {
     </section>
     <el-alert v-if="store.error" :title="store.error" type="error" show-icon/>
     <section class="table-shell">
+      <slot name="table" :items="store.items" :loading="store.loading">
       <el-table v-loading="store.loading" :data="store.items">
         <el-table-column prop="code" label="编码" width="150"/>
         <el-table-column label="名称" min-width="180">
@@ -74,13 +75,16 @@ async function confirmTransition() {
         <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDate(row.updatedAt) }}</template></el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
+            <slot name="row-actions" :row="row">
             <el-button v-if="!hideTransitions && canWrite && nextStatus(row.status, config.statuses)" link type="primary" @click="pending = { item: row, status: nextStatus(row.status, config.statuses)! }">推进至 {{ nextStatus(row.status, config.statuses) }}</el-button>
             <span v-else-if="!canWrite" class="muted">只读权限</span>
             <span v-else-if="hideTransitions" class="muted">由安全确认面板处理</span>
             <span v-else class="muted">流程结束</span>
+            </slot>
           </template>
         </el-table-column>
       </el-table>
+      </slot>
     </section>
     <ConfirmDialog v-model="showCreate" :title="`新增${config.label}`" @confirm="createDemo">
       <p>将创建一条包含完整责任人、风险和证据信息的演示记录。</p>

@@ -24,6 +24,11 @@ func (h *MooringPlanHandler) Register(group *gin.RouterGroup) {
 	resource.PUT("/:id", middleware.RequireMinimumRole("operator"), h.update)
 	resource.POST("/:id/transition", middleware.RequireMinimumRole("operator"), h.transition)
 	resource.DELETE("/:id", middleware.RequireRoles("admin"), h.remove)
+
+	// 泊位时段占用闭环只读视图：当前/历史占用与释放结论。
+	group.GET("/berth-occupancies", h.listOccupancies)
+	// 批准前冲突预览：同一泊位时段是否空闲。
+	group.GET("/berth-occupancies/conflicts", middleware.RequireMinimumRole("operator"), h.previewConflicts)
 }
 
 func (h *MooringPlanHandler) list(c *gin.Context) {
@@ -113,4 +118,32 @@ func (h *MooringPlanHandler) remove(c *gin.Context) {
 		return
 	}
 	util.NoContent(c)
+}
+
+func (h *MooringPlanHandler) listOccupancies(c *gin.Context) {
+	var query dto.BerthOccupancyQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		util.Fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	result, err := h.service.ListOccupancies(c.Request.Context(), query)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	util.Page(c, result.Items, result.Page, result.PageSize, result.Total)
+}
+
+func (h *MooringPlanHandler) previewConflicts(c *gin.Context) {
+	var query dto.BerthConflictQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		util.Fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	preview, err := h.service.PreviewConflicts(c.Request.Context(), query)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	util.OK(c, preview)
 }

@@ -13,6 +13,7 @@ type SecurityRepository interface {
 	CreateUser(context.Context, *model.User) error
 	CountUsers(context.Context) (int64, error)
 	AppendAudit(context.Context, *model.AuditLog) error
+	AppendAuditTx(context.Context, *gorm.DB, *model.AuditLog) error
 	ListAudits(context.Context, int, int, string) ([]model.AuditLog, int64, error)
 	SummarizeAudits(context.Context, time.Time) (model.AuditSummary, error)
 	EntityHistory(context.Context, string, uint, int) ([]model.AuditLog, error)
@@ -41,6 +42,12 @@ func (r *securityRepository) CountUsers(ctx context.Context) (int64, error) {
 
 func (r *securityRepository) AppendAudit(ctx context.Context, log *model.AuditLog) error {
 	return r.db.WithContext(ctx).Create(log).Error
+}
+
+// AppendAuditTx writes an audit entry inside a caller-managed transaction, so
+// business state changes and their audit trail commit or roll back together.
+func (r *securityRepository) AppendAuditTx(ctx context.Context, tx *gorm.DB, log *model.AuditLog) error {
+	return tx.WithContext(ctx).Create(log).Error
 }
 
 func (r *securityRepository) ListAudits(ctx context.Context, page, pageSize int, search string) ([]model.AuditLog, int64, error) {

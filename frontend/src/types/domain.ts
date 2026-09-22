@@ -20,8 +20,41 @@ export interface DomainRecord {
   submittedAt?: string;
   confirmedBy?: string;
   confirmedAt?: string;
+  berthCode?: string;
+  berthStartAt?: string;
+  berthEndAt?: string;
+  windowCode?: string;
+  currentOccupancyId?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BerthOccupancy {
+  id: number;
+  code: string;
+  status: 'active' | 'released';
+  version: number;
+  berthCode: string;
+  startAt: string;
+  endAt: string;
+  planId: number;
+  planCode: string;
+  windowCode: string;
+  acquiredBy: string;
+  acquiredAt: string;
+  releasedBy?: string;
+  releasedAt?: string;
+  releaseReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BerthConflictPreview {
+  berth: string;
+  startAt: string;
+  endAt: string;
+  free: boolean;
+  conflicts: BerthOccupancy[];
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }
