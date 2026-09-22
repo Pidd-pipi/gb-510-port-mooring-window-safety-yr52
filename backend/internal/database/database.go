@@ -81,6 +81,7 @@ func migrate(db *gorm.DB) error {
 		&model.MooringPlan{},
 		&model.WeatherWindow{},
 		&model.SafetyClearance{},
+		&model.BerthOccupancy{},
 	)
 }
 
@@ -109,11 +110,15 @@ func Seed(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 
+	if err := seedWeatherWindow(ctx, db); err != nil {
+		return err
+	}
+
 	if err := seedMooringPlan(ctx, db); err != nil {
 		return err
 	}
 
-	if err := seedWeatherWindow(ctx, db); err != nil {
+	if err := seedBerthOccupancy(ctx, db); err != nil {
 		return err
 	}
 
@@ -156,6 +161,8 @@ func seedMooringPlan(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	now := time.Now().UTC()
+	slotStart := now.Add(2 * time.Hour).Truncate(time.Hour)
+	slotEnd := slotStart.Add(6 * time.Hour)
 	items := []model.MooringPlan{
 
 		{BaseModel: model.BaseModel{Code: "MP-001", Name: "系泊方案示例一", Status: "draft", Version: 1,
@@ -166,14 +173,45 @@ func seedMooringPlan(ctx context.Context, db *gorm.DB) error {
 		{BaseModel: model.BaseModel{Code: "MP-002", Name: "系泊方案示例二", Status: "review", Version: 1,
 			Description: "用于启动验证和主要流程演示的系泊方案记录"}, Facility: "港口系泊安全窗口评估区域2", Owner: "质量复核组",
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-510-02"},
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "WW-002"},
 
 		{BaseModel: model.BaseModel{Code: "MP-003", Name: "系泊方案示例三", Status: "approved", Version: 1,
-			Description: "用于启动验证和主要流程演示的系泊方案记录"}, Facility: "港口系泊安全窗口评估区域3", Owner: "安全主管组",
+			Description: "批准后占用泊位时段并关联安全风浪窗口的闭环示例"}, Facility: "港口系泊安全窗口评估区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-510-03"},
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "WW-002",
+			Berth: "B-03", BerthStartAt: &slotStart, BerthEndAt: &slotEnd, WindowCode: "WW-002", WindowVersion: 1},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// seedBerthOccupancy mirrors the approved MP-003 with an active occupancy row.
+func seedBerthOccupancy(ctx context.Context, db *gorm.DB) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.BerthOccupancy{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	var plan model.MooringPlan
+	if err := db.WithContext(ctx).Where("code = ?", "MP-003").First(&plan).Error; err != nil {
+		return err
+	}
+	var window model.WeatherWindow
+	if err := db.WithContext(ctx).Where("code = ?", "WW-002").First(&window).Error; err != nil {
+		return err
+	}
+	if plan.BerthStartAt == nil || plan.BerthEndAt == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	occupancy := model.BerthOccupancy{
+		Berth: plan.Berth, PlanID: plan.ID, PlanCode: plan.Code,
+		StartAt: *plan.BerthStartAt, EndAt: *plan.BerthEndAt,
+		WindowID: window.ID, WindowCode: window.Code, WindowVersion: window.Version,
+		Status: model.OccupancyActive, CreatedAt: now, UpdatedAt: now,
+	}
+	return db.WithContext(ctx).Create(&occupancy).Error
 }
 
 func seedWeatherWindow(ctx context.Context, db *gorm.DB) error {

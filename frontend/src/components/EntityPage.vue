@@ -7,7 +7,13 @@ import StatusBadge from './common/StatusBadge.vue';
 import MetricCard from './common/MetricCard.vue';
 import ConfirmDialog from './common/ConfirmDialog.vue';
 
-const props = defineProps<{ config: EntityConfig; store: any; hideTransitions?: boolean }>();
+const props = defineProps<{
+  config: EntityConfig;
+  store: any;
+  hideTransitions?: boolean;
+  showBerthSlot?: boolean;
+  customRowActions?: boolean;
+}>();
 const { session } = useAuth();
 const search = ref('');
 const showCreate = ref(false);
@@ -37,6 +43,14 @@ async function confirmTransition() {
   await props.store.transition(props.config.path, pending.value.item, pending.value.status);
   pending.value = null;
 }
+
+function slotLabel(item: DomainRecord): string {
+  if (item.occupancy?.status === 'released') return '已释放';
+  if (item.berth && item.berthStartAt && item.berthEndAt) {
+    return `${item.berth} · ${formatDate(item.berthStartAt)} ~ ${formatDate(item.berthEndAt)}`;
+  }
+  return '-';
+}
 </script>
 
 <template>
@@ -60,7 +74,7 @@ async function confirmTransition() {
       <el-button type="primary" @click="store.load(config.path, search)">查询</el-button>
       <el-button @click="search = ''; store.load(config.path)">重置</el-button>
     </section>
-    <el-alert v-if="store.error" :title="store.error" type="error" show-icon/>
+    <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false"/>
     <section class="table-shell">
       <el-table v-loading="store.loading" :data="store.items">
         <el-table-column prop="code" label="编码" width="150"/>
@@ -69,15 +83,24 @@ async function confirmTransition() {
         </el-table-column>
         <el-table-column label="状态" width="140"><template #default="{ row }"><StatusBadge :status="row.status"/></template></el-table-column>
         <el-table-column prop="riskLevel" label="风险" width="90"/>
+        <el-table-column v-if="showBerthSlot" label="泊位时段" min-width="260">
+          <template #default="{ row }">
+            <span :class="{ 'slot-released': row.occupancy?.status === 'released' }">{{ slotLabel(row) }}</span>
+            <small v-if="row.windowCode">关联窗口 {{ row.windowCode }} v{{ row.windowVersion || 1 }}</small>
+          </template>
+        </el-table-column>
         <el-table-column prop="owner" label="责任人"/>
         <el-table-column label="指标"><template #default="{ row }">{{ row.metricValue }} {{ row.metricUnit }}</template></el-table-column>
         <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDate(row.updatedAt) }}</template></el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="操作" :width="customRowActions ? 240 : 200">
           <template #default="{ row }">
-            <el-button v-if="!hideTransitions && canWrite && nextStatus(row.status, config.statuses)" link type="primary" @click="pending = { item: row, status: nextStatus(row.status, config.statuses)! }">推进至 {{ nextStatus(row.status, config.statuses) }}</el-button>
-            <span v-else-if="!canWrite" class="muted">只读权限</span>
-            <span v-else-if="hideTransitions" class="muted">由安全确认面板处理</span>
-            <span v-else class="muted">流程结束</span>
+            <slot v-if="customRowActions" name="row-actions" :row="row"/>
+            <template v-else>
+              <el-button v-if="!hideTransitions && canWrite && nextStatus(row.status, config.statuses)" link type="primary" @click="pending = { item: row, status: nextStatus(row.status, config.statuses)! }">推进至 {{ nextStatus(row.status, config.statuses) }}</el-button>
+              <span v-else-if="!canWrite" class="muted">只读权限</span>
+              <span v-else-if="hideTransitions" class="muted">由安全确认面板处理</span>
+              <span v-else class="muted">流程结束</span>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -85,9 +108,10 @@ async function confirmTransition() {
     <ConfirmDialog v-model="showCreate" :title="`新增${config.label}`" @confirm="createDemo">
       <p>将创建一条包含完整责任人、风险和证据信息的演示记录。</p>
     </ConfirmDialog>
-    <ConfirmDialog :model-value="Boolean(pending)" title="确认状态迁移" @update:model-value="pending = null" @confirm="confirmTransition">
+    <ConfirmDialog v-if="!customRowActions" :model-value="Boolean(pending)" title="确认状态迁移" @update:model-value="pending = null" @confirm="confirmTransition">
       <p>状态迁移会写入审计日志，并使用版本号避免并发覆盖。</p>
       <strong>{{ pending?.item.status }} → {{ pending?.status }}</strong>
     </ConfirmDialog>
+    <slot/>
   </main>
 </template>

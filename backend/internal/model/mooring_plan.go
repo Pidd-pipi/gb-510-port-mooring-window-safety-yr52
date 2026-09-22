@@ -16,6 +16,14 @@ type MooringPlan struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+
+	// 批准时固化的泊位时段与关联风浪窗口；未批准或已撤回/替代前可能为空。
+	Berth         string     `json:"berth" gorm:"size:120;index"`
+	BerthStartAt  *time.Time `json:"berthStartAt"`
+	BerthEndAt    *time.Time `json:"berthEndAt"`
+	WindowID      uint       `json:"windowId" gorm:"index"`
+	WindowCode    string     `json:"windowCode" gorm:"size:64;index"`
+	WindowVersion uint       `json:"windowVersion"`
 }
 
 func (item *MooringPlan) GetBase() *BaseModel { return &item.BaseModel }

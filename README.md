@@ -28,9 +28,11 @@ docker compose down -v --remove-orphans
 |---|---|---|---|
 | 船舶靠泊 | `VesselCall` | `/api/vessels` | planned, approach, moored, departed |
 | 系泊方案 | `MooringPlan` | `/api/plans` | draft, review, approved, superseded |
+| 泊位时段占用 | `BerthOccupancy` | `/api/berth-occupancies` | active, released |
 | 风浪窗口 | `WeatherWindow` | `/api/weather-windows` | forecast, safe, restricted, expired |
 | 安全许可 | `SafetyClearance` | `/api/clearance` | pending, cleared, restricted, expired |
 
+- **泊位时段占用闭环**：方案提交批准（`POST /api/plans/:id/approve`）时必须填写泊位、靠泊起止时间与关联风浪窗口（编码+版本）。后端在同一泊位时间区间重叠时判定冲突；只有“关联窗口处于 safe 且版本一致”并且“泊位时段空闲”才批准，否则方案保持原状态、版本不变且不留下任何占用。批准与占用写入在 SERIALIZABLE 事务（SQLite 为单写者串行）+ 进程内按泊位互斥锁内完成，并发批准同一时段只有一处成功，冲突返回 409 并带结构化冲突时段明细。撤回（approved→review）或替代（approved→superseded）已批准方案时在同一事务内释放占用（active→released，记录释放人/时间/原因）并写入 `plan_withdraw`/`plan_supersede`/`occupancy_release` 审计。`POST /api/plans/:id/occupancy-check` 可在批准前预检窗口安全性与时段冲突；占用、冲突时段和释放结论随方案详情/列表与占用看板返回，刷新后可回读。
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC；后端写路由中间件、前端路由守卫与按钮权限保持一致。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 安全许可采用真实双人确认：operator 首次提交后仍保持 `pending`，不同账号的 reviewer/admin 才能放行；提交人不能自审。

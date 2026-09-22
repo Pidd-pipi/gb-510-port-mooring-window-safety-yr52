@@ -10,38 +10,55 @@ import (
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/dto"
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/model"
 	"github.com/blueship581/port-mooring-window-safety/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type MooringPlanService interface {
-	List(context.Context, dto.PageQuery) (repository.Page[model.MooringPlan], error)
-	Get(context.Context, uint) (model.MooringPlan, error)
-	Create(context.Context, dto.CreateMooringPlan, string, string) (model.MooringPlan, error)
-	Update(context.Context, uint, dto.UpdateMooringPlan, string, string) (model.MooringPlan, error)
-	Transition(context.Context, uint, dto.TransitionRequest, string, string) (model.MooringPlan, error)
+	List(context.Context, dto.PageQuery) (repository.Page[dto.MooringPlanView], error)
+	Get(context.Context, uint) (dto.MooringPlanView, error)
+	Create(context.Context, dto.CreateMooringPlan, string, string) (dto.MooringPlanView, error)
+	Update(context.Context, uint, dto.UpdateMooringPlan, string, string) (dto.MooringPlanView, error)
+	Transition(context.Context, uint, dto.TransitionRequest, string, string) (dto.MooringPlanView, error)
+	Approve(context.Context, uint, dto.ApproveMooringPlan, string, string) (dto.MooringPlanView, error)
+	CheckOccupancy(context.Context, dto.CheckOccupancyRequest) (dto.OccupancyCheckView, error)
+	Occupancies(context.Context, dto.OccupancyQuery) (repository.Page[model.BerthOccupancy], error)
 	Delete(context.Context, uint, string, string) error
 	StatusCounts(context.Context) (map[string]int64, error)
 }
 
 type mooringPlanService struct {
-	repository repository.MooringPlanRepository
-	security   SecurityService
+	repository          repository.MooringPlanRepository
+	occupancyRepository repository.BerthOccupancyRepository
+	windowRepository    repository.WeatherWindowRepository
+	security            SecurityService
+	db                  *gorm.DB
+	berthLocks          *keyedMutex
 }
 
-func NewMooringPlanService(repo repository.MooringPlanRepository, security SecurityService) MooringPlanService {
-	return &mooringPlanService{repository: repo, security: security}
+func NewMooringPlanService(
+	db *gorm.DB,
+	repo repository.MooringPlanRepository,
+	occupancy repository.BerthOccupancyRepository,
+	windows repository.WeatherWindowRepository,
+	security SecurityService,
+) MooringPlanService {
+	return &mooringPlanService{
+		repository: repo, occupancyRepository: occupancy, windowRepository: windows,
+		security: security, db: db, berthLocks: newKeyedMutex(),
+	}
 }
 
-func (s *mooringPlanService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.MooringPlan], error) {
-	return s.repository.List(ctx, query)
+func (s *mooringPlanService) List(ctx context.Context, query dto.PageQuery) (repository.Page[dto.MooringPlanView], error) {
+	return s.listViews(ctx, query)
 }
 
-func (s *mooringPlanService) Get(ctx context.Context, id uint) (model.MooringPlan, error) {
-	return s.repository.Get(ctx, id)
+func (s *mooringPlanService) Get(ctx context.Context, id uint) (dto.MooringPlanView, error) {
+	return s.getView(ctx, id)
 }
 
-func (s *mooringPlanService) Create(ctx context.Context, input dto.CreateMooringPlan, actor, requestID string) (model.MooringPlan, error) {
+func (s *mooringPlanService) Create(ctx context.Context, input dto.CreateMooringPlan, actor, requestID string) (dto.MooringPlanView, error) {
 	if err := validateMooringPlanBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
-		return model.MooringPlan{}, err
+		return dto.MooringPlanView{}, err
 	}
 	item := model.MooringPlan{
 		BaseModel: model.BaseModel{
@@ -55,19 +72,19 @@ func (s *mooringPlanService) Create(ctx context.Context, input dto.CreateMooring
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
 	}
 	if err := s.repository.Create(ctx, &item); err != nil {
-		return model.MooringPlan{}, fmt.Errorf("create 系泊方案: %w", err)
+		return dto.MooringPlanView{}, fmt.Errorf("create 系泊方案: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "create", "MooringPlan", item.ID, "", item.Status, "created 系泊方案")
-	return item, nil
+	return s.getView(ctx, item.ID)
 }
 
-func (s *mooringPlanService) Update(ctx context.Context, id uint, input dto.UpdateMooringPlan, actor, requestID string) (model.MooringPlan, error) {
+func (s *mooringPlanService) Update(ctx context.Context, id uint, input dto.UpdateMooringPlan, actor, requestID string) (dto.MooringPlanView, error) {
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
-		return model.MooringPlan{}, err
+		return dto.MooringPlanView{}, err
 	}
 	if err := validateMooringPlanBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
-		return model.MooringPlan{}, err
+		return dto.MooringPlanView{}, err
 	}
 	current.Name = strings.TrimSpace(input.Name)
 	current.Description = strings.TrimSpace(input.Description)
@@ -83,38 +100,67 @@ func (s *mooringPlanService) Update(ctx context.Context, id uint, input dto.Upda
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
-		return model.MooringPlan{}, fmt.Errorf("update 系泊方案: %w", err)
+		return dto.MooringPlanView{}, fmt.Errorf("update 系泊方案: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "update", "MooringPlan", id, current.Status, current.Status, "updated business fields")
-	return s.repository.Get(ctx, id)
+	return s.getView(ctx, id)
 }
 
-func (s *mooringPlanService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, requestID string) (model.MooringPlan, error) {
+func (s *mooringPlanService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, requestID string) (dto.MooringPlanView, error) {
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
-		return model.MooringPlan{}, err
+		return dto.MooringPlanView{}, err
 	}
 	target := strings.TrimSpace(input.Status)
 	if !constants.CanTransition(constants.MooringPlanTransitions, current.Status, target) {
-		return model.MooringPlan{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+		return dto.MooringPlanView{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
 	}
+
+	// Approval carries berth slot + window inputs and must go through Approve.
+	if target == string(constants.PlanApprovedState()) {
+		return dto.MooringPlanView{}, fmt.Errorf("%w: approval requires berth, slot and weather window via approve action", ErrInvalidInput)
+	}
+
+	// Leaving approved (withdraw to review or replacement) releases occupancy.
+	if current.Status == string(constants.PlanApprovedState()) {
+		return s.transitionWithRelease(ctx, current, input, actor, requestID, target)
+	}
+
 	before := current.Status
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
-		return model.MooringPlan{}, fmt.Errorf("transition 系泊方案: %w", err)
+		return dto.MooringPlanView{}, fmt.Errorf("transition 系泊方案: %w", err)
 	}
 	if err := s.security.Audit(ctx, actor, requestID, "transition", "MooringPlan", id, before, target, input.Reason); err != nil {
-		return model.MooringPlan{}, fmt.Errorf("persist transition audit: %w", err)
+		return dto.MooringPlanView{}, fmt.Errorf("persist transition audit: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.getView(ctx, id)
 }
 
 func (s *mooringPlanService) Delete(ctx context.Context, id uint, actor, requestID string) error {
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	// An approved plan still holds a berth: soft-delete and release in one
+	// transaction so the occupancy board cannot leak the slot.
+	if current.Status == string(constants.PlanApprovedState()) {
+		unlock := s.berthLocks.lock(current.Berth)
+		defer unlock()
+		return s.serializableTx(ctx, func(tx *gorm.DB) error {
+			if err := tx.First(&current, id).Error; err != nil {
+				return err
+			}
+			if _, _, err := s.releaseApprovedOccupancy(ctx, tx, current, actor, requestID, "plan_deleted"); err != nil {
+				return err
+			}
+			if err := s.repository.DeleteTx(ctx, tx, id); err != nil {
+				return err
+			}
+			return s.appendAuditTx(ctx, tx, actor, requestID, "delete", id, current.Status, "deleted", "soft deleted approved 系泊方案 and released berth occupancy", current.WindowVersion)
+		})
 	}
 	if err := s.repository.Delete(ctx, id); err != nil {
 		return err

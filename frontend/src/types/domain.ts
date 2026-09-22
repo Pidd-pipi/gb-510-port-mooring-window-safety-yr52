@@ -20,12 +20,64 @@ export interface DomainRecord {
   submittedAt?: string;
   confirmedBy?: string;
   confirmedAt?: string;
+  // 系泊方案批准时固化的泊位时段与关联风浪窗口
+  berth?: string;
+  berthStartAt?: string;
+  berthEndAt?: string;
+  windowId?: number;
+  windowCode?: string;
+  occupancy?: BerthOccupancy | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface BerthOccupancy {
+  id: number;
+  berth: string;
+  planId: number;
+  planCode: string;
+  startAt: string;
+  endAt: string;
+  windowId: number;
+  windowCode: string;
+  windowVersion: number;
+  status: 'active' | 'released';
+  releasedAt?: string | null;
+  releasedBy?: string;
+  releasedReason?: string;
+  releaseReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConflictSlot {
+  planCode: string;
+  berth: string;
+  startAt: string;
+  endAt: string;
+}
+
+export interface OccupancyConflictDetail {
+  berth: string;
+  conflicts: ConflictSlot[];
+}
+
+export interface OccupancyCheckResult {
+  available: boolean;
+  berth: string;
+  startAt: string;
+  endAt: string;
+  windowCode: string;
+  windowStatus: string;
+  windowVersion: number;
+  windowSafe: boolean;
+  conflicts: BerthOccupancy[];
+}
+
+export interface MooringPlanView extends DomainRecord {}
+
 export interface PageMeta { page: number; pageSize: number; total: number }
-export interface ApiEnvelope<T> { data: T; error?: string; message?: string; meta?: PageMeta }
+export interface ApiEnvelope<T> { data: T; error?: string; message?: string; meta?: PageMeta; details?: unknown }
 export interface UserSession { token: string; username: string; displayName: string; role: string; expiresIn: number }
 export interface AuditLog {
   id: number; requestId: string; actor: string; action: string; entityType: string;

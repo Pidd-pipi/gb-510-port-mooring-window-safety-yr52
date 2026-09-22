@@ -11,6 +11,7 @@ type Envelope struct {
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
 	Meta    any    `json:"meta,omitempty"`
+	Details any    `json:"details,omitempty"`
 }
 
 func OK(c *gin.Context, data any) {
@@ -27,6 +28,12 @@ func NoContent(c *gin.Context) {
 
 func Fail(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, Envelope{Error: code, Message: message})
+}
+
+// FailDetails returns an error envelope carrying structured details, e.g. the
+// overlapping berth slots that rejected an approval.
+func FailDetails(c *gin.Context, status int, code, message string, details any) {
+	c.AbortWithStatusJSON(status, Envelope{Error: code, Message: message, Details: details})
 }
 
 func Page(c *gin.Context, data any, page, pageSize int, total int64) {

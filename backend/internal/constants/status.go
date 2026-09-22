@@ -25,6 +25,10 @@ const (
 
 var AllClearanceState = []string{"pending", "cleared", "restricted", "expired"}
 
+// Typed state helpers used by the berth occupancy closed loop.
+func PlanApprovedState() string      { return "approved" }
+func WeatherWindowSafeState() string { return "safe" }
+
 var VesselCallTransitions = map[string]map[string]bool{
 	"planned":  {"approach": true, "moored": true},
 	"approach": {"moored": true, "departed": true, "planned": true},
